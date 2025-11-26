@@ -115,6 +115,7 @@ class CurriculumTrainer:
         dist_backend: str = "nccl",
         local_rank: int = int(os.environ.get("LOCAL_RANK", 0)),
         llm_id: str = None,
+        stage_epochs: dict = None,
     ):
         """
         Initialize the curriculum trainer.
@@ -127,6 +128,7 @@ class CurriculumTrainer:
             dist_backend: Distributed backend
             local_rank: Local GPU rank
             llm_id: LLM model ID (e.g., 'google/medgemma-2b', 'meta-llama/Llama-3.2-1B')
+            stage_epochs: Optional dict mapping stage names to number of epochs (e.g., {'stage1_mcq': 10})
         """
         self.model_type = model_type
         self.device = device or self._get_device()
@@ -136,6 +138,19 @@ class CurriculumTrainer:
             )
         self.llm_id = llm_id
         self.llm_id_safe = self._sanitize_llm_id(llm_id)
+        
+        # Default epochs for each stage
+        self.default_epochs = {
+            "stage1_mcq": 30,
+            "stage2_captioning": 20,
+            "stage3_cot": 30,
+            "stage4_sleep_cot": 60,
+            "stage5_ecg_cot": 60,
+        }
+        # Override with user-provided epochs
+        self.stage_epochs = self.default_epochs.copy()
+        if stage_epochs:
+            self.stage_epochs.update(stage_epochs)
 
         # Distributed training parameters
         self.gradient_checkpointing = gradient_checkpointing
@@ -1246,7 +1261,7 @@ class CurriculumTrainer:
         """Stage 1: Multiple Choice Question Answering (TSQA).
 
         Configuration:
-        - Epochs: 20
+        - Epochs: Configurable (default: 30)
         - OpenTSLMSP: encoder_lr=2e-4, projector_lr=1e-4
         - OpenTSLMFlamingo: base_lr=2e-4
         - Metric: Accuracy
@@ -1254,7 +1269,7 @@ class CurriculumTrainer:
         return self._train_stage(
             stage_name="stage1_mcq",
             dataset_class=TSQADataset,
-            num_epochs=30,
+            num_epochs=self.stage_epochs["stage1_mcq"],
             lr_encoder=2e-4,
             lr_projector=1e-4,
             lr_base=2e-4,
@@ -1271,7 +1286,7 @@ class CurriculumTrainer:
         """Stage 2: Caption Generation (M4).
 
         Configuration:
-        - Epochs: 15
+        - Epochs: Configurable (default: 20)
         - OpenTSLMSP: encoder_lr=1e-4, projector_lr=5e-5 (lower for fine-tuning)
         - OpenTSLMFlamingo: base_lr=1e-4 (lower for fine-tuning)
         - Metric: Test loss only
@@ -1279,7 +1294,7 @@ class CurriculumTrainer:
         return self._train_stage(
             stage_name="stage2_captioning",
             dataset_class=M4QADataset,
-            num_epochs=20,
+            num_epochs=self.stage_epochs["stage2_captioning"],
             lr_encoder=2e-4,
             lr_projector=1e-4,
             lr_base=2e-4,
@@ -1294,7 +1309,7 @@ class CurriculumTrainer:
         """Stage CoT: Chain-of-Thought Reasoning (HAR).
 
         Configuration:
-        - Epochs: 100
+        - Epochs: Configurable (default: 30)
         - OpenTSLMSP: encoder_lr=2e-4, projector_lr=1e-4
         - OpenTSLMFlamingo: base_lr=2e-4
         - Metric: Test loss only (chain-of-thought reasoning)
@@ -1304,7 +1319,7 @@ class CurriculumTrainer:
         return self._train_stage(
             stage_name="stage3_cot",
             dataset_class=HARCoTQADataset,
-            num_epochs=30,
+            num_epochs=self.stage_epochs["stage3_cot"],
             lr_encoder=2e-4,
             lr_projector=1e-4,
             lr_base=2e-4,
@@ -1356,59 +1371,7 @@ class CurriculumTrainer:
         return self._train_stage(
             stage_name="stage5_ecg_cot",
             dataset_class=ECGQACoTQADataset,
-            num_epochs=60,
-            lr_encoder=2e-4,
-            lr_projector=1e-4,
-            lr_base=2e-4,
-            metric_func=None,  # Only test loss for chain-of-thought reasoning
-            batch_size=batch_size,
-            eval_only=eval_only,
-            sampler=sampler,
-        )
-
-    def stage4_sleep_cot(
-        self, batch_size: int = None, eval_only: bool = False
-    ) -> Dict[str, Any]:
-        """Stage 4: Chain-of-Thought Reasoning (SleepEDF).
-
-        Configuration:
-        - Epochs: 60
-        - OpenTSLMSP: encoder_lr=2e-4, projector_lr=1e-4
-        - OpenTSLMFlamingo: base_lr=2e-4
-        - Metric: Test loss only (chain-of-thought reasoning)
-        """
-        sampler = None
-
-        return self._train_stage(
-            stage_name="stage4_sleep_cot",
-            dataset_class=SleepEDFCoTQADataset,
-            num_epochs=60,
-            lr_encoder=2e-4,
-            lr_projector=1e-4,
-            lr_base=2e-4,
-            metric_func=None,  # Only test loss for chain-of-thought reasoning
-            batch_size=batch_size,
-            eval_only=eval_only,
-            sampler=sampler,
-        )
-
-    def stage5_ecg_cot(
-        self, batch_size: int = None, eval_only: bool = False
-    ) -> Dict[str, Any]:
-        """Stage 5: Chain-of-Thought Reasoning (ECG QA CoT).
-
-        Configuration:
-        - Epochs: 60
-        - OpenTSLMSP: encoder_lr=2e-4, projector_lr=1e-4
-        - OpenTSLMFlamingo: base_lr=2e-4
-        - Metric: Test loss only (chain-of-thought reasoning)
-        """
-        sampler = None
-
-        return self._train_stage(
-            stage_name="stage5_ecg_cot",
-            dataset_class=ECGQACoTQADataset,
-            num_epochs=60,
+            num_epochs=self.stage_epochs["stage5_ecg_cot"],
             lr_encoder=2e-4,
             lr_projector=1e-4,
             lr_base=2e-4,
@@ -1706,6 +1669,44 @@ def main():
         help="Batch size for training (default: use value from model_config.py)",
     )
 
+    # Epoch configuration arguments
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help="Number of epochs for all stages (overrides defaults)",
+    )
+    parser.add_argument(
+        "--stage1_epochs",
+        type=int,
+        default=None,
+        help="Number of epochs for stage 1 (default: 30)",
+    )
+    parser.add_argument(
+        "--stage2_epochs",
+        type=int,
+        default=None,
+        help="Number of epochs for stage 2 (default: 20)",
+    )
+    parser.add_argument(
+        "--stage3_epochs",
+        type=int,
+        default=None,
+        help="Number of epochs for stage 3 (default: 30)",
+    )
+    parser.add_argument(
+        "--stage4_epochs",
+        type=int,
+        default=None,
+        help="Number of epochs for stage 4 (default: 60)",
+    )
+    parser.add_argument(
+        "--stage5_epochs",
+        type=int,
+        default=None,
+        help="Number of epochs for stage 5 (default: 60)",
+    )
+
     # Evaluation arguments
     parser.add_argument(
         "--eval_only",
@@ -1756,6 +1757,29 @@ def main():
     set_global_verbose(args.verbose)
     logger = get_logger(verbose=args.verbose)
 
+    # Build epoch configuration from CLI arguments
+    stage_epochs = {}
+    if args.epochs is not None:
+        # Global epochs setting applies to all stages
+        stage_epochs = {
+            "stage1_mcq": args.epochs,
+            "stage2_captioning": args.epochs,
+            "stage3_cot": args.epochs,
+            "stage4_sleep_cot": args.epochs,
+            "stage5_ecg_cot": args.epochs,
+        }
+    # Stage-specific epochs override global setting
+    if args.stage1_epochs is not None:
+        stage_epochs["stage1_mcq"] = args.stage1_epochs
+    if args.stage2_epochs is not None:
+        stage_epochs["stage2_captioning"] = args.stage2_epochs
+    if args.stage3_epochs is not None:
+        stage_epochs["stage3_cot"] = args.stage3_epochs
+    if args.stage4_epochs is not None:
+        stage_epochs["stage4_sleep_cot"] = args.stage4_epochs
+    if args.stage5_epochs is not None:
+        stage_epochs["stage5_ecg_cot"] = args.stage5_epochs
+
     # Initialize trainer
     trainer = CurriculumTrainer(
         args.model,
@@ -1765,6 +1789,7 @@ def main():
         dist_backend=args.dist_backend,
         local_rank=args.local_rank,
         llm_id=args.llm_id,
+        stage_epochs=stage_epochs if stage_epochs else None,
     )
 
     # Run curriculum
