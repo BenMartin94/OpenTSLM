@@ -116,6 +116,7 @@ class CurriculumTrainer:
         local_rank: int = int(os.environ.get("LOCAL_RANK", 0)),
         llm_id: str = None,
         stage_epochs: dict = None,
+        stage_max_samples: dict = None,
     ):
         """
         Initialize the curriculum trainer.
@@ -129,6 +130,7 @@ class CurriculumTrainer:
             local_rank: Local GPU rank
             llm_id: LLM model ID (e.g., 'google/medgemma-2b', 'meta-llama/Llama-3.2-1B')
             stage_epochs: Optional dict mapping stage names to number of epochs (e.g., {'stage1_mcq': 10})
+            stage_max_samples: Optional dict mapping stage names to max samples (e.g., {'stage1_mcq': 1000})
         """
         self.model_type = model_type
         self.device = device or self._get_device()
@@ -151,6 +153,9 @@ class CurriculumTrainer:
         self.stage_epochs = self.default_epochs.copy()
         if stage_epochs:
             self.stage_epochs.update(stage_epochs)
+        
+        # Dataset size limits (None = no limit)
+        self.stage_max_samples = stage_max_samples or {}
 
         # Distributed training parameters
         self.gradient_checkpointing = gradient_checkpointing
@@ -909,6 +914,16 @@ class CurriculumTrainer:
             return "test_loss" in metrics
         except:
             return False
+    
+    def _limit_dataset(self, dataset, stage_name: str):
+        """Limit dataset size if max_samples is configured for this stage."""
+        if stage_name in self.stage_max_samples:
+            max_samples = self.stage_max_samples[stage_name]
+            if max_samples and len(dataset.dataset) > max_samples:
+                if self.rank == 0:
+                    print(f"🔬 Limiting {stage_name} dataset from {len(dataset.dataset)} to {max_samples} samples")
+                dataset.dataset = dataset.dataset[:max_samples]
+        return dataset
 
     def _train_stage(
         self,
@@ -1020,12 +1035,12 @@ class CurriculumTrainer:
                 get_logger().warning(
                     "BalancedBatchSampler was provided, but distributed training (DDP) is enabled. BalancedBatchSampler will NOT be used. Data will be sharded using DistributedSampler instead. Typically for stage3_cot it is better to use BalancedBatchSampler, if dataset is imbalanced."
                 )
+                train_dataset = dataset_class(
+                    "train", EOS_TOKEN=self._get_model().get_eos_token()
+                )
+                train_dataset = self._limit_dataset(train_dataset, stage_name)
                 train_loader = self._merge_data_loaders(
-                    [
-                        dataset_class(
-                            "train", EOS_TOKEN=self._get_model().get_eos_token()
-                        )
-                    ],
+                    [train_dataset],
                     shuffle=True,
                     batch_size=batch_size,
                     patch_size=PATCH_SIZE,
@@ -1035,6 +1050,7 @@ class CurriculumTrainer:
                 train_dataset = dataset_class(
                     "train", EOS_TOKEN=self._get_model().get_eos_token()
                 )
+                train_dataset = self._limit_dataset(train_dataset, stage_name)
                 train_loader = DataLoader(
                     train_dataset,
                     batch_sampler=sampler,
@@ -1043,24 +1059,30 @@ class CurriculumTrainer:
                     ),
                 )
         else:
+            train_dataset = dataset_class("train", EOS_TOKEN=self._get_model().get_eos_token())
+            train_dataset = self._limit_dataset(train_dataset, stage_name)
             train_loader = self._merge_data_loaders(
-                [dataset_class("train", EOS_TOKEN=self._get_model().get_eos_token())],
+                [train_dataset],
                 shuffle=True,
                 batch_size=batch_size,
                 patch_size=PATCH_SIZE,
                 distribute_data=self.world_size > 1,
             )
 
+        val_dataset = dataset_class("validation", EOS_TOKEN=self._get_model().get_eos_token())
+        val_dataset = self._limit_dataset(val_dataset, stage_name)
         val_loader = self._merge_data_loaders(
-            [dataset_class("validation", EOS_TOKEN=self._get_model().get_eos_token())],
+            [val_dataset],
             shuffle=False,
             batch_size=1,
             patch_size=PATCH_SIZE,
             distribute_data=False,  # Don't distribute validation
         )
 
+        test_dataset = dataset_class("test", EOS_TOKEN=self._get_model().get_eos_token())
+        test_dataset = self._limit_dataset(test_dataset, stage_name)
         test_loader = self._merge_data_loaders(
-            [dataset_class("test", EOS_TOKEN=self._get_model().get_eos_token())],
+            [test_dataset],
             shuffle=False,
             batch_size=1,
             patch_size=PATCH_SIZE,
@@ -1707,6 +1729,44 @@ def main():
         help="Number of epochs for stage 5 (default: 60)",
     )
 
+    # Dataset size limit arguments
+    parser.add_argument(
+        "--max_samples",
+        type=int,
+        default=None,
+        help="Limit dataset size for all stages (for testing)",
+    )
+    parser.add_argument(
+        "--stage1_max_samples",
+        type=int,
+        default=None,
+        help="Limit dataset size for stage 1 (default: use all samples)",
+    )
+    parser.add_argument(
+        "--stage2_max_samples",
+        type=int,
+        default=None,
+        help="Limit dataset size for stage 2 (default: use all samples)",
+    )
+    parser.add_argument(
+        "--stage3_max_samples",
+        type=int,
+        default=None,
+        help="Limit dataset size for stage 3 (default: use all samples)",
+    )
+    parser.add_argument(
+        "--stage4_max_samples",
+        type=int,
+        default=None,
+        help="Limit dataset size for stage 4 (default: use all samples)",
+    )
+    parser.add_argument(
+        "--stage5_max_samples",
+        type=int,
+        default=None,
+        help="Limit dataset size for stage 5 (default: use all samples)",
+    )
+
     # Evaluation arguments
     parser.add_argument(
         "--eval_only",
@@ -1780,6 +1840,29 @@ def main():
     if args.stage5_epochs is not None:
         stage_epochs["stage5_ecg_cot"] = args.stage5_epochs
 
+    # Build dataset size limit configuration from CLI arguments
+    stage_max_samples = {}
+    if args.max_samples is not None:
+        # Global max_samples setting applies to all stages
+        stage_max_samples = {
+            "stage1_mcq": args.max_samples,
+            "stage2_captioning": args.max_samples,
+            "stage3_cot": args.max_samples,
+            "stage4_sleep_cot": args.max_samples,
+            "stage5_ecg_cot": args.max_samples,
+        }
+    # Stage-specific max_samples override global setting
+    if args.stage1_max_samples is not None:
+        stage_max_samples["stage1_mcq"] = args.stage1_max_samples
+    if args.stage2_max_samples is not None:
+        stage_max_samples["stage2_captioning"] = args.stage2_max_samples
+    if args.stage3_max_samples is not None:
+        stage_max_samples["stage3_cot"] = args.stage3_max_samples
+    if args.stage4_max_samples is not None:
+        stage_max_samples["stage4_sleep_cot"] = args.stage4_max_samples
+    if args.stage5_max_samples is not None:
+        stage_max_samples["stage5_ecg_cot"] = args.stage5_max_samples
+
     # Initialize trainer
     trainer = CurriculumTrainer(
         args.model,
@@ -1790,6 +1873,7 @@ def main():
         local_rank=args.local_rank,
         llm_id=args.llm_id,
         stage_epochs=stage_epochs if stage_epochs else None,
+        stage_max_samples=stage_max_samples if stage_max_samples else None,
     )
 
     # Run curriculum
