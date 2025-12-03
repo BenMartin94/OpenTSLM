@@ -1744,6 +1744,12 @@ def main():
         default=None,
         help="Number of epochs for stage 5 (default: 60)",
     )
+    parser.add_argument(
+        "--stage6_epochs",
+        type=int,
+        default=None,
+        help="Number of epochs for stage 6 (default: 20)",
+    )
 
     # Dataset size limit arguments
     parser.add_argument(
@@ -1843,6 +1849,7 @@ def main():
             "stage3_cot": args.epochs,
             "stage4_sleep_cot": args.epochs,
             "stage5_ecg_cot": args.epochs,
+            "stage6_energy": args.epochs,
         }
     # Stage-specific epochs override global setting
     if args.stage1_epochs is not None:
@@ -1855,6 +1862,8 @@ def main():
         stage_epochs["stage4_sleep_cot"] = args.stage4_epochs
     if args.stage5_epochs is not None:
         stage_epochs["stage5_ecg_cot"] = args.stage5_epochs
+    if args.stage6_epochs is not None:
+        stage_epochs["stage6_energy"] = args.stage6_epochs
 
     # Build dataset size limit configuration from CLI arguments
     stage_max_samples = {}
