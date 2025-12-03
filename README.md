@@ -35,7 +35,7 @@ OpenTSLM models can reason over multiple time series of any length at once, gene
 1. **Clone the Repository**
 
    ```bash
-   git clone https://github.com/StanfordBDHG/OpenTSLM.git --recurse-submodules
+   git clone https://github.com/BenMartin94/OpenTSLM.git --recurse-submodules
    ```
 
 2. **Install Dependencies**

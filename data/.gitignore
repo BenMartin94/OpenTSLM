@@ -4,3 +4,4 @@
 *.jsonl.gz
 *.jsonl.gz.part
 *.jsonl.gz.part.1
+*.parquet

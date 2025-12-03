@@ -20,6 +20,7 @@ from time_series_datasets.m4.M4QADataset import M4QADataset
 from time_series_datasets.sleep.SleepEDFCoTQADataset import SleepEDFCoTQADataset
 from time_series_datasets.har_cot.HARCoTQADataset import HARCoTQADataset
 from time_series_datasets.ecg_qa.ECGQACoTQADataset import ECGQACoTQADataset
+from time_series_datasets.energy.EnergyQADataset import EnergyQADataset
 from time_series_datasets.util import (
     extend_time_series_to_match_patch_size_and_aggregate,
 )
@@ -69,6 +70,7 @@ CURRICULUM_STAGES = [
     "stage3_cot",
     "stage4_sleep_cot",
     "stage5_ecg_cot",
+    "stage6_energy",
 ]
 
 
@@ -986,18 +988,15 @@ class CurriculumTrainer:
                             print(f"   {metric}: {value}")
                     print()
             else:
-                # Only allow fresh model for first stage
-                if stage_name != CURRICULUM_STAGES[0]:
-                    raise RuntimeError(
-                        f"Cannot start {stage_name} with fresh model. Previous stage {CURRICULUM_STAGES[CURRICULUM_STAGES.index(stage_name) - 1]} must be completed first."
-                    )
+                # Start with fresh model if no previous stage
                 if self.rank == 0:
-                    print("🆕 Starting with fresh model (first stage)")
+                    print("🆕 Starting with fresh model (no previous stage found)")
                     print()
         except Exception as e:
             if self.rank == 0:
-                print(f"❌ Error loading previous stage: {e}")
-            raise Exception(f"Error loading previous stage: {e}")
+                print(f"⚠️  Could not load previous stage: {e}")
+                print("🆕 Starting with fresh model instead")
+                print()
 
         # Check if evaluation was already completed
         evaluation_completed = self._is_evaluation_completed(stage_name)
@@ -1393,7 +1392,7 @@ class CurriculumTrainer:
         return self._train_stage(
             stage_name="stage5_ecg_cot",
             dataset_class=ECGQACoTQADataset,
-            num_epochs=self.stage_epochs["stage5_ecg_cot"],
+            num_epochs=self.stage_epochs.get("stage5_ecg_cot", 60),
             lr_encoder=2e-4,
             lr_projector=1e-4,
             lr_base=2e-4,
@@ -1401,6 +1400,29 @@ class CurriculumTrainer:
             batch_size=batch_size,
             eval_only=eval_only,
             sampler=sampler,
+        )
+
+    def stage6_energy(
+        self, batch_size: int = None, eval_only: bool = False
+    ) -> Dict[str, Any]:
+        """Stage 6: Building Energy Consumption Analysis.
+
+        Configuration:
+        - Epochs: 20 (default)
+        - OpenTSLMSP: encoder_lr=5e-5, projector_lr=5e-5
+        - OpenTSLMFlamingo: base_lr=1e-5
+        - Metric: Test accuracy for energy pattern classification
+        """
+        return self._train_stage(
+            stage_name="stage6_energy",
+            dataset_class=EnergyQADataset,
+            num_epochs=self.stage_epochs.get("stage6_energy", 20),
+            lr_encoder=5e-5,
+            lr_projector=5e-5,
+            lr_base=1e-5,
+            metric_func=None,
+            batch_size=batch_size,
+            eval_only=eval_only,
         )
 
     def run_curriculum(
@@ -1470,14 +1492,8 @@ class CurriculumTrainer:
                 )
                 results[stage] = stage_results
                 self._mark_stage_completed(stage, stage_results)
-            elif stage == "stage4_sleep_cot":
-                stage_results = self.stage4_sleep_cot(
-                    batch_size=batch_size, eval_only=eval_only
-                )
-                results[stage] = stage_results
-                self._mark_stage_completed(stage, stage_results)
-            elif stage == "stage5_ecg_cot":
-                stage_results = self.stage5_ecg_cot(
+            elif stage == "stage6_energy":
+                stage_results = self.stage6_energy(
                     batch_size=batch_size, eval_only=eval_only
                 )
                 results[stage] = stage_results
