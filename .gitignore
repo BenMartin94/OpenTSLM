@@ -4,7 +4,7 @@ __pycache__
 **/.DS_STORE
 
 raw_data
-
+results/
 
 *.ts
 *.zip
