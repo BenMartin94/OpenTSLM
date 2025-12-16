@@ -119,6 +119,7 @@ class CurriculumTrainer:
         llm_id: str = None,
         stage_epochs: dict = None,
         stage_max_samples: dict = None,
+        test_val_max_samples: int = None,
     ):
         """
         Initialize the curriculum trainer.
@@ -132,7 +133,8 @@ class CurriculumTrainer:
             local_rank: Local GPU rank
             llm_id: LLM model ID (e.g., 'google/medgemma-2b', 'meta-llama/Llama-3.2-1B')
             stage_epochs: Optional dict mapping stage names to number of epochs (e.g., {'stage1_mcq': 10})
-            stage_max_samples: Optional dict mapping stage names to max samples (e.g., {'stage1_mcq': 1000})
+            stage_max_samples: Optional dict mapping stage names to max training samples (e.g., {'stage1_mcq': 1000})
+            test_val_max_samples: Optional global limit for test and validation dataset sizes
         """
         self.model_type = model_type
         self.device = device or self._get_device()
@@ -158,6 +160,7 @@ class CurriculumTrainer:
         
         # Dataset size limits (None = no limit)
         self.stage_max_samples = stage_max_samples or {}
+        self.test_val_max_samples = test_val_max_samples
 
         # Distributed training parameters
         self.gradient_checkpointing = gradient_checkpointing
@@ -917,14 +920,30 @@ class CurriculumTrainer:
         except:
             return False
     
-    def _limit_dataset(self, dataset, stage_name: str):
-        """Limit dataset size if max_samples is configured for this stage."""
-        if stage_name in self.stage_max_samples:
-            max_samples = self.stage_max_samples[stage_name]
-            if max_samples and len(dataset.dataset) > max_samples:
-                if self.rank == 0:
-                    print(f"🔬 Limiting {stage_name} dataset from {len(dataset.dataset)} to {max_samples} samples")
-                dataset.dataset = dataset.dataset[:max_samples]
+    def _limit_dataset(self, dataset, stage_name: str, split: str = "train"):
+        """
+        Limit dataset size if max_samples is configured for this stage.
+        
+        Args:
+            dataset: The dataset to limit
+            stage_name: Name of the current stage
+            split: Split type ('train', 'validation', or 'test')
+        """
+        max_samples = None
+        
+        # For training split, use stage-specific limit
+        if split == "train":
+            if stage_name in self.stage_max_samples:
+                max_samples = self.stage_max_samples[stage_name]
+        # For validation/test splits, use global test_val limit
+        else:
+            max_samples = self.test_val_max_samples
+        
+        if max_samples and len(dataset.dataset) > max_samples:
+            if self.rank == 0:
+                print(f"🔬 Limiting {stage_name} {split} dataset from {len(dataset.dataset)} to {max_samples} samples")
+            dataset.dataset = dataset.dataset[:max_samples]
+        
         return dataset
 
     def _train_stage(
@@ -1037,7 +1056,7 @@ class CurriculumTrainer:
                 train_dataset = dataset_class(
                     "train", EOS_TOKEN=self._get_model().get_eos_token()
                 )
-                train_dataset = self._limit_dataset(train_dataset, stage_name)
+                train_dataset = self._limit_dataset(train_dataset, stage_name, split="train")
                 train_loader = self._merge_data_loaders(
                     [train_dataset],
                     shuffle=True,
@@ -1049,7 +1068,7 @@ class CurriculumTrainer:
                 train_dataset = dataset_class(
                     "train", EOS_TOKEN=self._get_model().get_eos_token()
                 )
-                train_dataset = self._limit_dataset(train_dataset, stage_name)
+                train_dataset = self._limit_dataset(train_dataset, stage_name, split="train")
                 train_loader = DataLoader(
                     train_dataset,
                     batch_sampler=sampler,
@@ -1059,7 +1078,7 @@ class CurriculumTrainer:
                 )
         else:
             train_dataset = dataset_class("train", EOS_TOKEN=self._get_model().get_eos_token())
-            train_dataset = self._limit_dataset(train_dataset, stage_name)
+            train_dataset = self._limit_dataset(train_dataset, stage_name, split="train")
             train_loader = self._merge_data_loaders(
                 [train_dataset],
                 shuffle=True,
@@ -1069,7 +1088,7 @@ class CurriculumTrainer:
             )
 
         val_dataset = dataset_class("validation", EOS_TOKEN=self._get_model().get_eos_token())
-        val_dataset = self._limit_dataset(val_dataset, stage_name)
+        val_dataset = self._limit_dataset(val_dataset, stage_name, split="validation")
         val_loader = self._merge_data_loaders(
             [val_dataset],
             shuffle=False,
@@ -1079,7 +1098,7 @@ class CurriculumTrainer:
         )
 
         test_dataset = dataset_class("test", EOS_TOKEN=self._get_model().get_eos_token())
-        test_dataset = self._limit_dataset(test_dataset, stage_name)
+        test_dataset = self._limit_dataset(test_dataset, stage_name, split="test")
         test_loader = self._merge_data_loaders(
             [test_dataset],
             shuffle=False,
@@ -1756,38 +1775,45 @@ def main():
         "--max_samples",
         type=int,
         default=None,
-        help="Limit dataset size for all stages (for testing)",
+        help="Limit training dataset size for all stages (for testing)",
+    )
+    parser.add_argument(
+        "--test_val_max_samples",
+        type=int,
+        default=None,
+        help="Global limit for test and validation dataset sizes across all stages",
     )
     parser.add_argument(
         "--stage1_max_samples",
         type=int,
         default=None,
-        help="Limit dataset size for stage 1 (default: use all samples)",
+        help="Limit training dataset size for stage 1 (default: use all samples)",
     )
     parser.add_argument(
         "--stage2_max_samples",
         type=int,
         default=None,
-        help="Limit dataset size for stage 2 (default: use all samples)",
+        help="Limit training dataset size for stage 2 (default: use all samples)",
     )
     parser.add_argument(
         "--stage3_max_samples",
         type=int,
         default=None,
-        help="Limit dataset size for stage 3 (default: use all samples)",
+        help="Limit training dataset size for stage 3 (default: use all samples)",
     )
     parser.add_argument(
         "--stage4_max_samples",
         type=int,
         default=None,
-        help="Limit dataset size for stage 4 (default: use all samples)",
+        help="Limit training dataset size for stage 4 (default: use all samples)",
     )
     parser.add_argument(
         "--stage5_max_samples",
         type=int,
         default=None,
-        help="Limit dataset size for stage 5 (default: use all samples)",
+        help="Limit training dataset size for stage 5 (default: use all samples)",
     )
+    
 
     # Evaluation arguments
     parser.add_argument(
@@ -1899,6 +1925,7 @@ def main():
         llm_id=args.llm_id,
         stage_epochs=stage_epochs if stage_epochs else None,
         stage_max_samples=stage_max_samples if stage_max_samples else None,
+        test_val_max_samples=args.test_val_max_samples,
     )
 
     # Run curriculum
