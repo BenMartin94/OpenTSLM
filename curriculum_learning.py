@@ -1385,7 +1385,7 @@ class CurriculumTrainer:
         return self._train_stage(
             stage_name="stage4_sleep_cot",
             dataset_class=SleepEDFCoTQADataset,
-            num_epochs=60,
+            num_epochs=self.stage_epochs.get("stage4_sleep_cot", 60),
             lr_encoder=2e-4,
             lr_projector=1e-4,
             lr_base=2e-4,

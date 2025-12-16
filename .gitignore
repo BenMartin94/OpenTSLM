@@ -10,3 +10,4 @@ results/
 *.zip
 ./__pycache__
 *.parquet
+data
