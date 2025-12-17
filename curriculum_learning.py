@@ -69,8 +69,8 @@ CURRICULUM_STAGES = [
     "stage2_captioning",
     "stage3_cot",
     "stage4_sleep_cot",
-    "stage5_ecg_cot",
-    "stage6_energy",
+    "stage5_energy",  # Replaced stage5_ecg_cot with energy dataset
+    "stage6_ecg_cot",  # Moved ECG to stage 6
 ]
 
 
@@ -85,7 +85,8 @@ class CurriculumTrainer:
     - stage2_captioning: Trains the model on a time-series captioning dataset (M4 time series captioning)
     - stage3_cot: Trains the model on a chain-of-thought reasoning dataset (HAR CoT)
     - stage4_sleep_cot: Trains the model on sleep stage classification with chain-of-thought reasoning
-    - stage5_ecg_cot: Trains the model on ECG QA with chain-of-thought reasoning
+    - stage5_energy: Trains the model on building energy consumption analysis
+    - stage6_ecg_cot: Trains the model on ECG QA with chain-of-thought reasoning
 
     Features:
     - Automatic loss history tracking saved to loss_history.txt in each stage's checkpoints directory
@@ -151,7 +152,8 @@ class CurriculumTrainer:
             "stage2_captioning": 20,
             "stage3_cot": 30,
             "stage4_sleep_cot": 60,
-            "stage5_ecg_cot": 60,
+            "stage5_energy": 20,
+            "stage6_ecg_cot": 60,
         }
         # Override with user-provided epochs
         self.stage_epochs = self.default_epochs.copy()
@@ -798,8 +800,8 @@ class CurriculumTrainer:
                         if stage == "stage2_captioning" and "id" in sample:
                             result["time_series_id"] = sample["id"]
 
-                        # Add template_id and ecg_id for stage5_ecg_cot
-                        if stage == "stage5_ecg_cot":
+                        # Add template_id and ecg_id for stage6_ecg_cot
+                        if stage == "stage6_ecg_cot":
                             if "template_id" in sample:
                                 result["template_id"] = sample["template_id"]
                             if "ecg_id" in sample:
@@ -1395,10 +1397,33 @@ class CurriculumTrainer:
             sampler=sampler,
         )
 
-    def stage5_ecg_cot(
+    def stage5_energy(
         self, batch_size: int = None, eval_only: bool = False
     ) -> Dict[str, Any]:
-        """Stage 5: Chain-of-Thought Reasoning (ECG QA CoT).
+        """Stage 5: Building Energy Consumption Analysis.
+
+        Configuration:
+        - Epochs: 20 (default)
+        - OpenTSLMSP: encoder_lr=5e-5, projector_lr=5e-5
+        - OpenTSLMFlamingo: base_lr=1e-5
+        - Metric: Test accuracy for energy pattern classification
+        """
+        return self._train_stage(
+            stage_name="stage5_energy",
+            dataset_class=EnergyQADataset,
+            num_epochs=self.stage_epochs.get("stage5_energy", 20),
+            lr_encoder=5e-5,
+            lr_projector=5e-5,
+            lr_base=1e-5,
+            metric_func=None,
+            batch_size=batch_size,
+            eval_only=eval_only,
+        )
+
+    def stage6_ecg_cot(
+        self, batch_size: int = None, eval_only: bool = False
+    ) -> Dict[str, Any]:
+        """Stage 6: Chain-of-Thought Reasoning (ECG QA CoT).
 
         Configuration:
         - Epochs: 60
@@ -1409,9 +1434,9 @@ class CurriculumTrainer:
         sampler = None
 
         return self._train_stage(
-            stage_name="stage5_ecg_cot",
+            stage_name="stage6_ecg_cot",
             dataset_class=ECGQACoTQADataset,
-            num_epochs=self.stage_epochs.get("stage5_ecg_cot", 60),
+            num_epochs=self.stage_epochs.get("stage6_ecg_cot", 60),
             lr_encoder=2e-4,
             lr_projector=1e-4,
             lr_base=2e-4,
@@ -1419,29 +1444,6 @@ class CurriculumTrainer:
             batch_size=batch_size,
             eval_only=eval_only,
             sampler=sampler,
-        )
-
-    def stage6_energy(
-        self, batch_size: int = None, eval_only: bool = False
-    ) -> Dict[str, Any]:
-        """Stage 6: Building Energy Consumption Analysis.
-
-        Configuration:
-        - Epochs: 20 (default)
-        - OpenTSLMSP: encoder_lr=5e-5, projector_lr=5e-5
-        - OpenTSLMFlamingo: base_lr=1e-5
-        - Metric: Test accuracy for energy pattern classification
-        """
-        return self._train_stage(
-            stage_name="stage6_energy",
-            dataset_class=EnergyQADataset,
-            num_epochs=self.stage_epochs.get("stage6_energy", 20),
-            lr_encoder=5e-5,
-            lr_projector=5e-5,
-            lr_base=1e-5,
-            metric_func=None,
-            batch_size=batch_size,
-            eval_only=eval_only,
         )
 
     def run_curriculum(
@@ -1505,14 +1507,14 @@ class CurriculumTrainer:
                 )
                 results[stage] = stage_results
                 self._mark_stage_completed(stage, stage_results)
-            elif stage == "stage5_ecg_cot":
-                stage_results = self.stage5_ecg_cot(
+            elif stage == "stage5_energy":
+                stage_results = self.stage5_energy(
                     batch_size=batch_size, eval_only=eval_only
                 )
                 results[stage] = stage_results
                 self._mark_stage_completed(stage, stage_results)
-            elif stage == "stage6_energy":
-                stage_results = self.stage6_energy(
+            elif stage == "stage6_ecg_cot":
+                stage_results = self.stage6_ecg_cot(
                     batch_size=batch_size, eval_only=eval_only
                 )
                 results[stage] = stage_results
@@ -1636,7 +1638,7 @@ class CurriculumTrainer:
         model = self._get_model()
 
         # Enable LoRA for stages after stage2_captioning
-        stages_with_lora = ["stage3_cot", "stage4_sleep_cot", "stage5_ecg_cot"]
+        stages_with_lora = ["stage3_cot", "stage4_sleep_cot", "stage5_energy", "stage6_ecg_cot"]
 
         if stage_name in stages_with_lora:
             if not getattr(model, "lora_enabled", False):
@@ -1671,7 +1673,7 @@ class CurriculumTrainer:
         model = self._get_model()
 
         # Enable LoRA for stages after stage2_captioning
-        stages_with_lora = ["stage3_cot", "stage4_sleep_cot", "stage5_ecg_cot"]
+        stages_with_lora = ["stage3_cot", "stage4_sleep_cot", "stage5_energy", "stage6_ecg_cot"]
 
         if stage_name in stages_with_lora:
             if not getattr(model, "lora_enabled", False):
@@ -1761,13 +1763,13 @@ def main():
         "--stage5_epochs",
         type=int,
         default=None,
-        help="Number of epochs for stage 5 (default: 60)",
+        help="Number of epochs for stage 5 (energy, default: 20)",
     )
     parser.add_argument(
         "--stage6_epochs",
         type=int,
         default=None,
-        help="Number of epochs for stage 6 (default: 20)",
+        help="Number of epochs for stage 6 (ecg_cot, default: 60)",
     )
 
     # Dataset size limit arguments
@@ -1874,8 +1876,8 @@ def main():
             "stage2_captioning": args.epochs,
             "stage3_cot": args.epochs,
             "stage4_sleep_cot": args.epochs,
-            "stage5_ecg_cot": args.epochs,
-            "stage6_energy": args.epochs,
+            "stage5_energy": args.epochs,
+            "stage6_ecg_cot": args.epochs,
         }
     # Stage-specific epochs override global setting
     if args.stage1_epochs is not None:
@@ -1887,9 +1889,9 @@ def main():
     if args.stage4_epochs is not None:
         stage_epochs["stage4_sleep_cot"] = args.stage4_epochs
     if args.stage5_epochs is not None:
-        stage_epochs["stage5_ecg_cot"] = args.stage5_epochs
+        stage_epochs["stage5_energy"] = args.stage5_epochs
     if args.stage6_epochs is not None:
-        stage_epochs["stage6_energy"] = args.stage6_epochs
+        stage_epochs["stage6_ecg_cot"] = args.stage6_epochs
 
     # Build dataset size limit configuration from CLI arguments
     stage_max_samples = {}
@@ -1900,7 +1902,8 @@ def main():
             "stage2_captioning": args.max_samples,
             "stage3_cot": args.max_samples,
             "stage4_sleep_cot": args.max_samples,
-            "stage5_ecg_cot": args.max_samples,
+            "stage5_energy": args.max_samples,
+            "stage6_ecg_cot": args.max_samples,
         }
     # Stage-specific max_samples override global setting
     if args.stage1_max_samples is not None:
@@ -1912,7 +1915,7 @@ def main():
     if args.stage4_max_samples is not None:
         stage_max_samples["stage4_sleep_cot"] = args.stage4_max_samples
     if args.stage5_max_samples is not None:
-        stage_max_samples["stage5_ecg_cot"] = args.stage5_max_samples
+        stage_max_samples["stage5_energy"] = args.stage5_max_samples
 
     # Initialize trainer
     trainer = CurriculumTrainer(
